@@ -1,0 +1,44 @@
+---
+title: "Power Co Exploratory Analysis"
+output: html_notebook
+---
+
+#Libraries
+```{r}
+library(data.table)
+```
+
+
+
+#Load Data
+```{r}
+data=fread('train/ml_case_training_data.csv')
+output=fread('train/ml_case_training_output.csv')
+hist=fread('train/ml_case_training_hist_data.csv')
+summary(data)
+```
+# Let give a proper treatment for each type of variable
+```{r}
+id=1
+dummy=3
+dates=grep("date",names(data))
+categorical=setdiff(which(sapply(data,function(s) class(s)=="character")==T),dates)
+categorical=setdiff(categorical,c(id,dummy))
+value=setdiff(1:dim(data)[2],c(id,dummy,dates,categorical))
+```
+
+## clean Dates
+```{r}
+cdates=data[,dates,with=F][,lapply(.SD,function(d) as.Date(d,format="%Y-%m-%d"))]
+summary(cdates)
+```
+## Clean Categorical
+```{r}
+ccategorical=data[,categorical,with=F][,lapply(.SD,as.factor)]
+summary(ccategorical)
+```
+```{r}
+cvalues=data[,value,with=F]
+summary(cvalues)
+```
+

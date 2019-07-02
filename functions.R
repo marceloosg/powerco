@@ -44,9 +44,10 @@ transform_dates=function(cdates){
   cdates[,days_from_renewal:= as.numeric(date_renewal - date_activ)]
   cdates[,-c(1:5)]
 }
-get_dates=function(frame,indexes){
+get_dates=function(frame,indexes,transform=T){
   cdates=data[,indexes$dates,with=F][,lapply(.SD,function(d) as.Date(d,format="%Y-%m-%d"))]
-  transform_dates(cdates)
+  if(transform) cdates=transform_dates(cdates)
+  cdates
 }
 
 get_categorical=function(frame,indexes){
@@ -122,6 +123,7 @@ build_binaries=function(structure_data){
 train_binary_pca=function(model,structured_data,remove_columns=c()){
   dataset=structure_data$combined$binaries
   dataset=dataset[,setdiff(names(dataset),remove_columns),with=F]
+  print("Training Binary PCA")
   model$pca$binary=prcomp(dataset,rank. = 15)
   model$pca$binary_names=names(dataset)
   model
@@ -129,17 +131,18 @@ train_binary_pca=function(model,structured_data,remove_columns=c()){
 train_continuous_pca=function(model,structured_data,remove_columns=c()){
   dataset=structure_data$output$imputed_values
   dataset=dataset[,setdiff(names(dataset),remove_columns),with=F]
+  print("Training Continuous PCA")
   model$pca$values=prcomp(dataset,rank. = 15)
   model$pca$value_names=names(dataset)
   model
 }
-pca_accuracy=function(model,structure_data,binary=T){
+pca_accuracy=function(model,binary=T){
   if(binary){
-    pca.bin=model$pca$binary
-    binaries=structure_data$combined$binaries
+    pca.bin=model$fit$pca$binary
+    binaries=model$data$combined$binaries
   }else{
-    pca.bin=model$pca$values
-    binaries=structure_data$output$imputed_values
+    pca.bin=model$fit$pca$values
+    binaries=model$data$output$imputed_values
   }
   pd=dim(pca.bin$rotation)
   pca.rows=pd[1]
@@ -167,24 +170,56 @@ pca_accuracy=function(model,structure_data,binary=T){
     scale_fill_gradient2(low="red",high="blue",breaks=c(0,0.2,0.4,0.6,0.8,1),midpoint = 0.35)+ylim(0,1)+
     theme(axis.text.x = element_text(angle = 90, hjust = 1))
   if(binary){
-    model$pca$bin_accuracy <<- acc
+    model$fit$pca$bin_accuracy <<- acc
   }else{
-    model$pca$val_accuracy <<- acc
+    model$fit$pca$val_accuracy <<- acc
   }
   plot_grid(histogram,bar)
 }
-train_pipeline=function(data){
+plot_explain_variance=function(model){
+  bin=fviz_screeplot(model$fit$pca$binary, addlabels = TRUE)
+  val=fviz_screeplot(model$fit$pca$values, addlabels = TRUE)
+  plot_grid(bin,val)
+}
+
+plot_cum_explain_variance=function(model){
+  bin=model$fit$pca$binary
+  val=model$fit$pca$values
+  g=function(bin) ggplot(data.table(dim=1:15,exp_var=(cumsum(bin$sdev^2)/sum(bin$sdev^2))[1:15]))+geom_bar(aes(x=dim,y=exp_var),stat="identity",fill="blue")+ylim(0,1)+geom_hline(yintercept=0.9,color="red")
+  gbin=g(bin)
+  gval=g(val)
+  plot_grid(gbin,gval)
+}
+preprocess_train_pipeline=function(data){
   model=train_preprocess_model(data)
   structure_data=predict_preprocess_model(model,data)
   model=train_binary_pca(model,structure_data)
   model=train_continuous_pca(model,structure_data)
   list("fit"=model,"data"=structure_data)
 }
-cbindlist=function(dlist){
+preprocess_predict_pipeline=function(model,data){
+  
+  structure_data=predict_preprocess_model(model$fit,data)
+  id=structure_data$output$id
+  binaries=structure_data$combined$binaries[,model$fit$pca$binary_names,with=F]
+  print("Predict Binary PCA")
+  pca_binaries=predict(model$fit$pca$binary,binaries)
+  values=structure_data$output$imputed_values[,model$fit$pca$value_names,with=F]
+  print("Predict Values PCA")
+  pca_values=predict(model$fit$pca$values,values)
+  output=list("id"=id,"bin"=data.table(pca_binaries),"val"=data.table(pca_values))
+  results=cbindlist(output,append=T)
+  list("data"=structure_data,
+       "output"=output,
+       "results"=results)
+}
+cbindlist=function(dlist,append=F){
   
   aux=dlist[names(dlist)[1]][[1]]
-  for(a in dlist[names(dlist)[-1]]){
-    aux=cbind(aux,a)
+  for(a in names(dlist)[-1]){
+    ds=dlist[[a]]
+    if(append) colnames(ds)=paste(a,names(ds),sep=".")
+    aux=cbind(aux,ds)
   }
   aux
 }

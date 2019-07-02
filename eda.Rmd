@@ -31,39 +31,32 @@ processed_train_data=predict_preprocess_model(model,data)
 ```
 
 ```{r}
-binaries=cbindlist(list(binary=structure_data$output$binary,na=structure_data$output$na_values,one=structure_data$output$one_hot_categorical_data))
-dim(binaries)
+structure_data =build_binaries(structure_data)
+dim(structure_data$combined$binaries)
 ```
 
 #Dimension Reduction
 ## Although homols package is more appropriate for binary variables, we will testing it due to speed constraints
 ```{r}
-
-pca.bin=prcomp(binaries,rank. = 15)
-fviz_screeplot(pca.bin, addlabels = TRUE)
+model=train_binary_pca(model,structure_data)
+fviz_screeplot(model$pca$binary, addlabels = TRUE)
 ```
 ```{r}
-ggplot(data.table(dim=1:15,exp_var=(cumsum(pca.bin$sdev^2)/sum(pca.bin$sdev^2))[1:15]))+geom_bar(aes(x=dim,y=exp_var),stat="identity",fill="blue")+ylim(0,1)+geom_hline(yintercept=0.9,color="red")
+ggplot(data.table(dim=1:15,exp_var=(cumsum(model$pca$binary$sdev^2)/sum(model$pca$binary$sdev^2))[1:15]))+geom_bar(aes(x=dim,y=exp_var),stat="identity",fill="blue")+ylim(0,1)+geom_hline(yintercept=0.9,color="red")
 ```
 
 # Let's see how accurate pca can reconstruct the binary matrix with just 15 dimensions
 ```{r}
-rot=cbind(as.matrix(pca.bin$rotation),matrix(rep(0,450*435),nrow=450,ncol=435))
-z=cbind(as.matrix(predict(pca.bin)),matrix(rep(0,16096*435),nrow=16096,ncol=435))
-r=as.data.table(z%*%t(rot)+pca.bin$center)
-colnames(r)=colnames(binaries)
-r=(r > 0.5) +0
-comp=r==binaries
-comp=as.data.table(comp)[,lapply(.SD,mean)]
-hist(as.numeric(comp))
+aplot=pca_accuracy(model,structure_data)
+aplot
 ```
-# Which columns cannot be reconstructed
+
+# Are the low accuracy columns those correlated?
 ```{r}
-names(comp)[which(comp < 0.95)]
+corrplot::corrplot(cor(structure_data$combined$binaries[,model$pca$bin_accuracy[accurate==F]$names,with=F]))
 ```
-
-
 ```{r}
-
+model=train_continuous_pca(model,structure_data)
 ```
+
 

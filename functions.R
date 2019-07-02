@@ -1,6 +1,8 @@
 library(caret)
 library(FactoMineR)
 library(factoextra)
+library(ggplot2)
+library(cowplot)
 train.na=function(frame){
   is.na.data=frame[,lapply(.SD,is.na)]  
   na.model=is.na.data[,which(sapply(.SD,any))]
@@ -26,7 +28,7 @@ get_index=function(frame){
   binary=grep("has_gas",names(frame))
   categorical=setdiff(which(sapply(data,function(s) class(s)=="character")==T),dates)
   categorical=setdiff(categorical,c(id,dummy,binary))
-  value=setdiff(1:dim(data)[2],c(id,dummy,dates,categorical))
+  value=setdiff(1:dim(data)[2],c(id,dummy,dates,categorical,binary))
   output=list("id"=id,"dummy"=dummy,"dates"=dates,"binary"=binary, "categorical"=categorical,"value"=value)
   lapply(output,function(s) as.names(frame,s))
 }
@@ -107,9 +109,76 @@ predict_preprocess_model=function(model,frame){
   print("-------ok")
   print("Predict Imput data") 
   structure_data$output$imputed_values=predict(model$imput_model,structure_data$raw$values)
-
   print("-------ok")
+  print("Merge Binary data") 
+  structure_data =build_binaries(structure_data)
+  print("-------ok")  
   structure_data
+}
+build_binaries=function(structure_data){
+  structure_data$combined$binaries=cbindlist(list(binary=structure_data$output$binary,na=structure_data$output$na_values,one=structure_data$output$one_hot_categorical_data))
+  structure_data
+}
+train_binary_pca=function(model,structured_data,remove_columns=c()){
+  dataset=structure_data$combined$binaries
+  dataset=dataset[,setdiff(names(dataset),remove_columns),with=F]
+  model$pca$binary=prcomp(dataset,rank. = 15)
+  model$pca$binary_names=names(dataset)
+  model
+}
+train_continuous_pca=function(model,structured_data,remove_columns=c()){
+  dataset=structure_data$output$imputed_values
+  dataset=dataset[,setdiff(names(dataset),remove_columns),with=F]
+  model$pca$values=prcomp(dataset,rank. = 15)
+  model$pca$value_names=names(dataset)
+  model
+}
+pca_accuracy=function(model,structure_data,binary=T){
+  if(binary){
+    pca.bin=model$pca$binary
+    binaries=structure_data$combined$binaries
+  }else{
+    pca.bin=model$pca$values
+    binaries=structure_data$output$imputed_values
+  }
+  pd=dim(pca.bin$rotation)
+  pca.rows=pd[1]
+  pca.cols=pd[2]
+  d=dim(binaries)
+  rows=d[1]
+  cols=d[2]
+  padd=(cols-pca.cols)
+  rot=cbind(as.matrix(pca.bin$rotation),matrix(rep(0,pca.rows*padd),nrow=pca.rows,ncol=padd))
+  z=cbind(as.matrix(predict(pca.bin)),matrix(rep(0,rows*padd),nrow=rows,ncol=padd))
+  r=as.data.table(z%*%t(rot)+pca.bin$center)
+  colnames(r)=colnames(binaries)
+  if(binary){
+    r=(r > 0.5) +0
+    comp=r==binaries
+    comp=as.data.table(comp)[,lapply(.SD,mean)]
+  }else{comp=1-data.table((r-binaries)^2 )[,lapply(.SD,sum)]/binaries[,lapply(.SD,function(s) sum(s^2))]}
+  acc=data.table(names=names(comp),accuracy=as.numeric(comp),accurate=as.numeric(comp)>=0.95)
+  histogram=ggplot(data=acc)+geom_histogram(aes(x=accuracy,fill=accurate))
+  bar=ggplot(data=acc[accurate==F][,.(names=sapply(names,
+                                            function(n) paste(substr(n,1,3),substr(n,nchar(n)-3,nchar(n)),sep=".")
+                                            ),accuracy
+                                      )])+
+    geom_bar(aes(x=names,y=accuracy,fill=accuracy),stat = "identity")+
+    scale_fill_gradient2(low="red",high="blue",breaks=c(0,0.2,0.4,0.6,0.8,1),midpoint = 0.35)+ylim(0,1)+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  if(binary){
+    model$pca$bin_accuracy <<- acc
+  }else{
+    model$pca$val_accuracy <<- acc
+  }
+  plot_grid(histogram,bar)
+}
+train_pipeline=function(data){
+  model=train_preprocess_model(data)
+  structure_data=predict_preprocess_model(model,data)
+  model=train_binary_pca(model,structure_data)
+  model=train_continuous_pca(model,structure_data)
+  list("fit"=model,"data"=structure_data)
 }
 cbindlist=function(dlist){
   

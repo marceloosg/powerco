@@ -33,7 +33,7 @@ get_index=function(frame){
   lapply(output,function(s) as.names(frame,s))
 }
 get_binary=function(frame,indexes){
-  data[,indexes$binary,with=F][,lapply(.SD,function(s) as.numeric(as.factor(s))-1)]
+  frame[,indexes$binary,with=F][,lapply(.SD,function(s) as.numeric(as.factor(s))-1)]
 }
 transform_dates=function(cdates){
   cdates[,activ_year:=year(date_activ)]
@@ -44,17 +44,16 @@ transform_dates=function(cdates){
   cdates[,days_from_renewal:= as.numeric(date_renewal - date_activ)]
   cdates[,-c(1:5)]
 }
-get_dates=function(frame,indexes,transform=T){
-  cdates=data[,indexes$dates,with=F][,lapply(.SD,function(d) as.Date(d,format="%Y-%m-%d"))]
-  if(transform) cdates=transform_dates(cdates)
-  cdates
+get_dates=function(frame,indexes){
+  cdates=frame[,indexes$dates,with=F][,lapply(.SD,function(d) as.Date(d,format="%Y-%m-%d"))]
+  list("dates"=cdates, "transformed_dates"=transform_dates(cdates))
 }
 
 get_categorical=function(frame,indexes){
-  data[,indexes$categorical,with=F][,lapply(.SD,as.factor)]
+  frame[,indexes$categorical,with=F][,lapply(.SD,as.factor)]
 }
 get_values=function(frame,indexes){
-  data[,indexes$value,with=F]
+  frame[,indexes$value,with=F]
 }
 format_types=function(frame,indexes){
   cid=frame[,indexes$id,with=F]
@@ -62,8 +61,8 @@ format_types=function(frame,indexes){
   cdates=get_dates(frame,indexes)
   ccategorical=get_categorical(frame,indexes)
   cvalues=get_values(frame,indexes)
-  cvalues=cbind(cdates,cvalues)
-  list("output"=list("id"=cid,"binary"=binary),"raw"=list("categorical"=ccategorical,"values"=cvalues))
+  cvalues=cbind(cdates$transformed_dates,cvalues)
+  list("output"=list("id"=cid,"binary"=binary),"raw"=list("categorical"=ccategorical,"values"=cvalues,"dates"=cdates$dates))
 }
 train_data_structure=function(frame,indexes){
   formated_data=format_types(frame,indexes)
@@ -79,12 +78,19 @@ predict_data_structure=function(structure_model,frame){
 train_categorical_one_hot=function(structure_model){
   dummyVars("~ .",data= structure_model$format$raw$categorical)
 }
+getdummy=function(df){
+  cn=levels(df[[1]])
+  names(df)="value"
+  rdf=df[,lapply(factor(cn),function(s) value==s)]
+  names(rdf)=cn
+  rdf+0
+}
 predict_one_hot_model=function(one_hot_categorical_model,structure_data){
   one_hot_categorical_data=data.table(predict(one_hot_categorical_model,structure_data$raw$categorical))
   one_hot_categorical_data
 }
 
-train_preprocess_model=function(frame){
+train_preprocess_model=function(frame,cleanOnly){
   print("Remove Zero Variance columns and split columns by type")
   indexes=get_index(frame)
   print("-------ok")
@@ -94,11 +100,16 @@ train_preprocess_model=function(frame){
   print("Train one Hot Encode of categorical columns")
   one_hot_categorical_model=train_categorical_one_hot(structure_model)
   print("-------ok")
-  print("Train imput model")
-  imput_model=preProcess(structure_model$format$raw$values,method="knnImpute")
-  print("-------ok")
+  if(cleanOnly){
+    imput_model=NULL
+  }else{
+    print("Train imput model")
+    imput_model=preProcess(structure_model$format$raw$values,method="knnImpute")
+    print("-------ok")
+  }
   list("structure_model"=structure_model,
        "one_hot_categorical_model"=one_hot_categorical_model, 
+       "cleanOnly"=cleanOnly,
        "imput_model"=imput_model)
 }
 predict_preprocess_model=function(model,frame){
@@ -108,9 +119,11 @@ predict_preprocess_model=function(model,frame){
   print("Predict one Hot Encode of categorical columns")
   structure_data$output$one_hot_categorical_data=predict_one_hot_model(model$one_hot_categorical_model,structure_data)
   print("-------ok")
-  print("Predict Imput data") 
-  structure_data$output$imputed_values=predict(model$imput_model,structure_data$raw$values)
-  print("-------ok")
+  if(!model$cleanOnly){
+    print("Predict Imput data") 
+    structure_data$output$imputed_values=predict(model$imput_model,structure_data$raw$values)
+    print("-------ok")
+  }
   print("Merge Binary data") 
   structure_data =build_binaries(structure_data)
   print("-------ok")  
@@ -190,12 +203,14 @@ plot_cum_explain_variance=function(model){
   gval=g(val)
   plot_grid(gbin,gval)
 }
-preprocess_train_pipeline=function(data){
-  model=train_preprocess_model(data)
+preprocess_train_pipeline=function(data,cleanOnly=F){
+  model=train_preprocess_model(data,cleanOnly)
   structure_data=predict_preprocess_model(model,data)
-  model=train_binary_pca(model,structure_data)
-  model=train_continuous_pca(model,structure_data)
-  list("fit"=model,"data"=structure_data)
+  if(!cleanOnly){
+    model=train_binary_pca(model,structure_data)
+    model=train_continuous_pca(model,structure_data)
+  }
+  list("fit"=model,"data"=structure_data, "cleanOnly"=cleanOnly)
 }
 preprocess_predict_pipeline=function(model,data){
   
@@ -222,4 +237,8 @@ cbindlist=function(dlist,append=F){
     aux=cbind(aux,ds)
   }
   aux
+}
+
+assert=function(text,bool){
+  try(if(!bool) stop(text))
 }

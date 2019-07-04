@@ -14,23 +14,134 @@ source("functions.R")
 
 
 #Load Data
+## Data Summary
 ```{r}
 data=fread('train/ml_case_training_data.csv')
 output=fread('train/ml_case_training_output.csv')
 hist=fread('train/ml_case_training_hist_data.csv')
 summary(data)
 ```
+We can see a lot of missing values, the dataset must handle those case before any modeling can begin.
+
+Let's take a look at the target variable
+```{r}
+table(output$churn)
+```
+We have umbalanced classes and we should undersample the data in order to prevent it from skewing the results.
+But first, let's keep 30% of our data aside in order to have fresh data for the validation procedure.
+
+# Validation Partitioning
+```{r}
+set.seed(814)
+full_train_index=createDataPartition(output$churn,p=0.7,list = F)
+full_train_data=data[full_train_index]
+test_data=data[-full_train_index]
+```
+# Basic Cleaning
+Let's us build a basic clean dataset before undersampling it.
+This consists in converting dates, one_encoding categorical variables, and other minor feature transformations.
+```{r}
+clean_data=preprocess_train_pipeline(full_train_data,cleanOnly = T)
+cdata=cbindlist(clean_data$data$output,append = T)
+dim(cdata)
+```
+Now we have over 417 dimensions to deal with. The categorical variables have been transformed and each category have been assigned to a new binary variable.
+To make column selection easier each variable had it's name preappended according to its origin
+```{r}
+unique(sapply(strsplit(names(cdata),split="\\."),function(s) s[[1]]))
+```
+
+
+
+# Undersampling partitions
+```{r}
+set.seed(815)
+part=data_partition(full_train_data,output[full_train_index]$churn,k=11)
+sampled_binary=part$apply(part,clean_data$data$combined$binaries,y=T)
+lapply(sampled_binary,dim)
+```
+
+We chose to undersample before making any descriptive analysis to prevent long tailed distribuition from skewing results due to the large samples of a specific class.
+
+Let's see which are the top 10 binary values with great jaccard similarity with our target variable:
+# Similarities
+```{r}
+part$measure(sampled_binary,jaccard)
+```
+These results were averaged out of 11 resamplings.
+
+#Accuracy
+```{r}
+part$measure(sampled_binary,accuracy)
+```
+
+Now let's look at time dependence of the average of our target variable:
+```{r}
+sampled_values=part$apply(part,clean_data$data$raw$values,y=T)
+plots=data_partition.regression(sampled_values)
+plot_grid(plotlist=plots)
+```
+From the last couple of years we can see a linear increase in the probability of churn with time. The means that recent activation users are more likely to churn.
+
+Let's see if the energy price follows the same trend:
+
+```{r}
+dt=cbind(clean_data$data$output$id,clean_data$data$raw$values)
+dt=merge(dt,output,by='id')
+clean_hist=hist
+clean_hist[,price_date:= as.Date(price_date,format="%Y-%m-%d")]
+clean_hist=melt(clean_hist,id.vars=c('id','price_date'))
+clean_hist[,sd:=sd(value),.(variable,id)]
+forecast=clean_hist[sd > 0][,.(price_2017=predict(lm(value ~ price_date),newdata = data.table(price_date=as.Date("2017-01-01")))),.(id,variable)]
+still_price_forecast=clean_hist[sd == 0][, .(price_2017=mean(value,na.rm=T)),.(id,variable)]
+full_forecast=rbind(forecast,still_price_forecast)
+avg_price_forecast=clean_hist[, .(avg_price_2015=mean(value,na.rm=T)),.(id,variable)]
+full_forecast=merge(full_forecast,avg_price_forecast,by=c('id','variable'))
+forecast_values=merge(full_forecast,dt,by='id',all=F)
+dt_plot=forecast_values[,.(price_2017=mean(price_2017),sd=sd(price_2017)) ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable)]
+ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd))+geom_point()+geom_errorbar()
+```
+```{r}
+dt_plot=forecast_values[,.(avg_price_2015=mean(avg_price_2015),sd=sd(avg_price_2015))
+                        ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable)]
+
+ggplot(dt_plot,aes(x=x,y=avg_price_2015,ymin=avg_price_2015-sd,ymax=avg_price_2015+sd))+geom_point()+geom_errorbar()
+```
+
+
+
+Not much help, we should look for the price distribuition if it changes over time.
+
+```{r}
+forecast_values[,price_cat:=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105))]
+dt_cat_plot=forecast_values[,.N ,.(x=activ_year,variable,price_cat,churn)]
+dt_cat_plot=dt_cat_plot[,.(p=N/sum(N),price_cat) ,.(x,variable,churn)]
+
+ggplot(dt_cat_plot,aes(x=x,y=p,fill=price_cat))+geom_bar(stat='identity')+facet_grid(churn~variable)+coord_flip()+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+Does gas_consumtion is a confounding variable?
+```{r}
+hist(log(forecast_values$cons_gas_12m+1))
+```
+
+```{r}
+gas_values=merge(forecast_values,data[,.(id,has_gas)],by='id')
+ggplot(gas_values[,.(avg_churn=mean(churn)),.(price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(log(cons_gas_12m+1),c(-1,0,1,2,4,6,8,10,12,14)),has_gas)],aes(x=price_cat,y=avg_churn,fill=gas_cat))+geom_bar(stat='identity',position='dodge')+facet_wrap(~has_gas)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
 
 
 ```{r,cache=TRUE}
+
 preprocess_model=preprocess_train_pipeline(data)
 ```
+
 ```{r}
 save(preprocess_model,file="preprocessing.model.RData")
 ```
 
 
 ```{r,cache=TRUE}
+load("preprocessing.model.RData")
 plot_explain_variance(preprocess_model)
 ```
 
@@ -58,7 +169,8 @@ corrplot::corrplot(cor(preprocess_model$data$output$imputed_values[,preprocess_m
 ```
 
 ```{r}
-preprocessed_training_data=preprocess_predict_pipeline(model,data)
+
+preprocessed_training_data=preprocess_predict_pipeline(preprocess_model,data)
 dim(preprocessed_training_data$results)
 ```
 
@@ -80,19 +192,16 @@ dd=dd[complete.cases(dd)]
 ds=rbind(dd[V2==1],dd[V2==0][sample(1:dim(dd[V2==0])[1],size=dim(dd[V2==1])[1])])
 lmod=randomForest::randomForest(factor(V2) ~ .,data=ds)
 
-table(predict(lmod))
+
 
 
 ```
 
 
 ```{r}
-date_churn=cbind(model$data$output$id,get_dates(data,model$fit$structure_model$indexes,F))
+date_churn=cbind(preprocess_model$data$output$id,get_dates(data,preprocess_model$fit$structure_model$indexes,F))
 date_churn=merge(date_churn,output,by="id")
 date_churn[,mean(churn),month(date_end)][order(-V1)]
-```
-```{r}
-date_churn[,.(.N,mean(V2)),year(date_end)][order(-V2)]
 ```
 ```{r}
 
@@ -103,7 +212,7 @@ date_churn[,.(.N,mean(V2)),year(date_end)][order(-V2)]
 ## split
 ```{r}
 result=merge(preprocessed_training_data$results,output,by="id")
-set.seed(814)0
+set.seed(814)
 index = createDataPartition(y=output$churn, p=0.7, list=FALSE )
 
 train = result[index,-c("id")]

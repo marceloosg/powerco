@@ -56,6 +56,7 @@ unique(sapply(strsplit(names(cdata),split="\\."),function(s) s[[1]]))
 # Undersampling partitions
 ```{r}
 set.seed(815)
+source("partition.R")
 part=data_partition(full_train_data,output[full_train_index]$churn,k=11)
 sampled_binary=part$apply(part,clean_data$data$combined$binaries,y=T)
 lapply(sampled_binary,dim)
@@ -99,7 +100,7 @@ avg_price_forecast=clean_hist[, .(avg_price_2015=mean(value,na.rm=T)),.(id,varia
 full_forecast=merge(full_forecast,avg_price_forecast,by=c('id','variable'))
 forecast_values=merge(full_forecast,dt,by='id',all=F)
 dt_plot=forecast_values[,.(price_2017=mean(price_2017),sd=sd(price_2017)) ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable)]
-ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd))+geom_point()+geom_errorbar()
+ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd,color=variable))+geom_point()+geom_errorbar()
 ```
 ```{r}
 dt_plot=forecast_values[,.(avg_price_2015=mean(avg_price_2015),sd=sd(avg_price_2015))
@@ -113,8 +114,10 @@ ggplot(dt_plot,aes(x=x,y=avg_price_2015,ymin=avg_price_2015-sd,ymax=avg_price_20
 Not much help, we should look for the price distribuition if it changes over time.
 
 ```{r}
-forecast_values[,price_cat:=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105))]
-dt_cat_plot=forecast_values[,.N ,.(x=activ_year,variable,price_cat,churn)]
+dt_cat_plot=forecast_values[,.(price_cat=(as.character(cut(price_2017,4))),activ_year,activ_month,id,churn),variable]
+dt_cat_plot=forecast_values[,.(price_cat=cut(price_2017,breaks=c(-50,0,0.05,0.1,1,10,20,30,40,50,60,70,80,105)),activ_year,activ_month,id,churn,variable)]
+
+dt_cat_plot=dt_cat_plot[,.N ,.(x=activ_year,variable,price_cat,churn)]
 dt_cat_plot=dt_cat_plot[,.(p=N/sum(N),price_cat) ,.(x,variable,churn)]
 
 ggplot(dt_cat_plot,aes(x=x,y=p,fill=price_cat))+geom_bar(stat='identity')+facet_grid(churn~variable)+coord_flip()+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
@@ -126,7 +129,83 @@ hist(log(forecast_values$cons_gas_12m+1))
 
 ```{r}
 gas_values=merge(forecast_values,data[,.(id,has_gas)],by='id')
-ggplot(gas_values[,.(avg_churn=mean(churn)),.(price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(log(cons_gas_12m+1),c(-1,0,1,2,4,6,8,10,12,14)),has_gas)],aes(x=price_cat,y=avg_churn,fill=gas_cat))+geom_bar(stat='identity',position='dodge')+facet_wrap(~has_gas)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+dt_plot=gas_values[,.(.N,avg_churn=mean(churn)),.(price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(transform_gas(cons_gas_12m),c(-8,-4,-2,0,1,2,6,15)),has_gas)]
+dt_plot=dt_plot[,.(N,p=N/sum(N),avg_churn,gas_cat,price_cat),has_gas]
+ggplot(dt_plot,aes(x=price_cat,y=avg_churn,fill=gas_cat))+geom_bar(stat='identity',position='dodge')+facet_wrap(~has_gas)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+geom_point(aes(y=p,color=gas_cat,size=N))
+```
+
+#Let's see the difference between the churn distribuition across prices, time and if it is a gas client.
+```{r}
+dt_cat_plot=gas_values[,.(price_cat=cut(price_2017,breaks=c(-50,0,0.05,0.1,1,10,20,30,40,50,60,70,80,105)),has_gas,activ_year,activ_month,id,churn,variable)]
+
+dt_cat_plot=dt_cat_plot[,.N ,.(x=activ_year,variable,price_cat,churn,has_gas)]
+dt_cat_plot=dt_cat_plot[,.(N,p=N/sum(N),price_cat) ,.(x,variable,churn,has_gas)]
+
+delta_plot=merge(dt_cat_plot[churn==0 ,-c("churn")],dt_cat_plot[churn==1][,-c("churn")],by=c("x","variable","price_cat","has_gas"),all=T)
+delta_plot[!complete.cases(delta_plot)]
+delta_plot[is.na(p.x)]$p.x=0
+delta_plot[is.na(p.y)]$p.y=0
+delta_plot[,p:=p.y-p.x]
+
+ggplot(delta_plot,aes(x=x,y=p,fill=price_cat))+geom_bar(stat='identity')+facet_grid(has_gas~variable)+coord_flip()+theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+These cannot explain the increase in churn in the recent years.
+```{r}
+adt_plot=gas_values[,.(.N,price_2017=mean(price_2017),sd=sd(price_2017)) ,.(x=activ_year+0*(activ_month/12-0.5/12)*100,variable,churn,has_gas,
+                                                                         gas_cat=cut(transform_gas(cons_gas_12m),c(-8,0,1,2,4,12,15)))]
+dt_plot=merge(adt_plot[churn==0],adt_plot[churn==1],all=T,by=c('x','variable','has_gas','gas_cat'))
+dt_plot[is.na(price_2017.x)]$price_2017.x =0 
+dt_plot[is.na(price_2017.y)]$price_2017.y =0 
+dt_plot[is.na(sd.x)]$sd.x =0 
+dt_plot[is.na(sd.y)]$sd.y =0 
+
+dt_plot[,price_2017:=price_2017.y- price_2017.x]
+dt_plot[,sd:=sd.y + sd.x]
+dt_plot[,has_churn:=!is.na(churn.y)]
+ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd,color=variable,size=N.x),shape=4)+geom_point(shape=4)+geom_errorbar(size=1,alpha=0.5)+
+  facet_grid(gas_cat~has_gas+has_churn)+theme(axis.text.x = element_text(angle = 90, hjust = 1))+geom_hline(yintercept=0)+ylim(-20,20)
+
+```
+```{r}
+dt_plot[,sum((price_2017 > 0 )*N.x,na.rm=T)/sum(N.x,na.rm=T)]
+```
+80% of churns have average price above the normal average.
+
+```{r}
+gas_values=merge(forecast_values,data[,.(id,has_gas)],by='id')
+dt_plot=gas_values[activ_year >= 2009,.(.N,avg_churn=mean(churn)),.(x=activ_year,price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(transform_gas(cons_gas_12m),c(-8,-4,-2,0,1,2,15)),has_gas)]
+dt_plot=dt_plot[,.(N,p=N/sum(N),price_cat,gas_cat,avg_churn),.(x,has_gas)]
+ggplot(dt_plot,aes(x=price_cat,y=avg_churn,fill=gas_cat))+geom_bar(stat='identity',position='dodge')+geom_point(aes(y=p,color=gas_cat))+
+  facet_wrap(x~has_gas)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+```{r}
+gas_values=merge(forecast_values,data[,.(id,has_gas)],by='id')
+dt_plot=gas_values[activ_year >= 2009,.(.N,avg_churn=mean(churn)),.(x=activ_year,price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(transform_gas(cons_gas_12m),c(-8,-4,-2,0,1,2,15)),has_gas)]
+dt_plot=dt_plot[,.(N,p=N/sum(N),price_cat,gas_cat,avg_churn),.(x,has_gas)]
+ggplot(dt_plot,aes(x=as.numeric(price_cat),y=avg_churn,color=gas_cat,size=p))+geom_point()+
+  facet_wrap(x~has_gas)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+gas_values=merge(forecast_values,data[,.(id,has_gas)],by='id')
+ggplot(gas_values[,.(.N,avg_churn=mean(churn)),.(x=activ_year,price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(log(cons_gas_12m+1),c(-1,0,1,2,4,6,8,10,12,14)),has_gas)],aes(x=price_cat,y=N,fill=gas_cat))+geom_bar(stat='identity',position='dodge')+facet_wrap(x~has_gas)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+transform_gas=function(gas){
+  sapply(gas,function(s){
+    ifelse(s < 0, log(-1/s),
+           ifelse(s == 0, 0, log(s)))
+  })
+}
+gas_values[,summary(transform_gas(cons_gas_12m))]
+dt_plot=gas_values[activ_year >= 2009,.N,.(x=activ_year,price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(transform_gas(cons_gas_12m),c(-8,-4,-2,0,1,2,15)),has_gas,churn)]
+dt_plot=dt_plot[,.(N,p=N/sum(N),price_cat,gas_cat),.(x,has_gas,churn)]
+ggplot(dt_plot,aes(x=price_cat,y=p,fill=gas_cat))+geom_bar(stat='identity',position='dodge')+
+facet_grid(x~has_gas+churn)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+#+geom_line(aes(y=p,x=as.numeric(price_cat),color=gas_cat))+
+  
 ```
 
 

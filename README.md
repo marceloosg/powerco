@@ -13,3 +13,5 @@
 -train.Rmd - notebook with trained models
 
 Current work achieved 0.64 ROC and 0.088 Brier Score
+
+Nexts steps - add historical data forecast to features to capture signal obtained on eda.

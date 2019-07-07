@@ -1,0 +1,144 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(data.table)
+library(RANN)
+library(e1071)
+library(dplyr)
+source("functions.R")
+source("partition.R")
+source("measures.R")
+```
+
+```{r}
+
+```
+
+# Validation Partitioning
+```{r}
+set.seed(814)
+full_train_index=createDataPartition(output$churn,p=0.7,list = F)
+full_train_data=data[full_train_index]
+test_data=data[-full_train_index]
+dim(full_train_data)
+```
+# Pre-Process
+```{r}
+set.seed(816)
+imput_model=preprocess_train_pipeline(full_train_data)
+idata=preprocess_predict_pipeline(imput_model,full_train_data)
+train_ready=merge(idata$results,output[,.(id,churn=factor(ifelse(churn==1,"t", "f")))],by='id',all=F)[,-"id"]
+dim(train_ready)
+```
+```{r}
+tdata=preprocess_predict_pipeline(imput_model,test_data)
+test_ready=merge(tdata$results,output[,.(id,churn=factor(ifelse(churn==1,"t", "f")))],by='id',all=F)[,-"id"]
+dim(test_ready)
+```
+# Naive Bayes 
+```{r}
+set.seed(814)
+ctrl <- trainControl(method = "cv", 
+                     number = 7, 
+                     summaryFunction = brierSummary,
+                     verboseIter = FALSE,classProbs=TRUE)
+                    # sampling = "down")
+library(doMC)
+registerDoMC(5)
+down.nb.fit = train(as.factor(churn) ~ ., data=train_ready, method="nb",
+                trControl = ctrl,metric="ROC")
+z=predict(down.nb.fit)
+confusionMatrix(z,factor(train_ready$churn),positive="t")
+```
+```{r}
+down.nb.fit
+```
+```{r}
+w=data.table(predict(down.nb.fit,type="prob",newdata = test_ready))
+p=w$t
+sdata=cbind(data.table(obs=factor(test_ready$churn),pred=factor(ifelse(p>0.5,"t","f"))),f=1-p,t=p)
+sdata$rowIndex=1:dim(sdata)[1]
+b=brierSummary(as.data.frame(sdata),lev=levels(sdata$pred))
+b
+```
+
+#Random Forest with down sampling
+```{r}
+set.seed(814)
+tunegrid <- expand.grid(.mtry=c(1,5,15))
+ctrl <- trainControl(method = "cv", 
+                     number = 3, 
+                     verboseIter = FALSE,summaryFunction = brierSummary,
+                     preProcOptions= c(thresh=0.8),
+                     sampling = "down",
+                     classProbs = T)
+library(doMC)
+registerDoMC(6)
+down.rf.fit = lapply(c(10,50,100,200,400,800),function(nt) train(as.factor(churn) ~ ., data=train_ready, method="rf",preProcess="pca",
+                    metric="ROC",ntree=nt,tuneGrid=tunegrid,
+                trControl = ctrl))
+down.rf.fit
+```
+##calibrate probabilities
+```{r}
+z=data.table(predict(down.rf.fit[[6]],type="prob"))
+ps=z$t
+B=0.11
+p=ps*B/(ps*B-ps+1)
+pplot=data.table(prob=c(p,ps),type=c(rep("calibrated",length(p)),rep("asis",length(ps))))
+ggplot(pplot,aes(x=prob,fill=type))+geom_histogram()
+```
+```{r}
+sdata=cbind(data.table(obs=factor(train_ready$churn),pred=factor(ifelse(p>0.5,"t","f"))),f=1-p,t=p)
+sdata$rowIndex=1:dim(sdata)[1]
+b=brierSummary(as.data.frame(sdata),lev=levels(sdata$pred))
+b
+```
+```{r}
+confusionMatrix(sdata$pred,(train_ready$churn),positive="t")
+```
+
+
+```{r}
+w=data.table(predict(down.rf.fit[[6]],type="prob",newdata = test_ready))
+ps=w$t
+B=0.11
+p=ps*B/(ps*B-ps+1)
+pplot=data.table(prob=c(p,ps),type=c(rep("calibrated",length(p)),rep("asis",length(ps))))
+ggplot(pplot,aes(x=prob,fill=type))+geom_histogram()
+```
+```{r}
+sdata=cbind(data.table(obs=factor(test_ready$churn),pred=factor(ifelse(p>0.5,"t","f"))),f=1-p,t=p)
+sdata$rowIndex=1:dim(sdata)[1]
+b=brierSummary(as.data.frame(sdata),lev=levels(sdata$pred))
+b
+```
+
+
+```{r}
+confusionMatrix(factor(ifelse(w$t>0.5,"t","f")),test_ready$churn,positive="t")
+```
+
+
+```{r}
+ml_test_data=fread("test/ml_case_test_data.csv")
+tfdata=preprocess_predict_pipeline(imput_model,ml_test_data)
+
+w=data.table(predict(down.rf.fit[[6]],type="prob",newdata = tfdata$results[,-"id"]))
+ps=w$t
+B=0.11
+p=ps*B/(ps*B-ps+1)
+pplot=data.table(prob=c(p,ps),type=c(rep("calibrated",length(p)),rep("asis",length(ps))))
+ggplot(pplot,aes(x=prob,fill=type))+geom_histogram()
+```
+
+
+```{r}
+test_output=data.table(id=ml_test_data$id,Churn_prediction=(p>0.5) +0,Churn_probability=p)
+fwrite(test_output,"test_output.csv")
+```
+

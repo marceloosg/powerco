@@ -1,10 +1,21 @@
 data_partition.make=function(index,y,k) lapply(1:k,function(i) downSample(index,factor(y),list=F))
-data_partition.apply=function(self,ds,y=F){
-  assert("dimension mismatch",dim(ds)[1]==length(self$index))
-  result=lapply(self$partition,function(p){
-    parted=ds[p$x]
-    if(y) parted=cbind(parted,data.table(y=p$Class))
-    parted
+data_partition.apply=function(self,ds,y=F,by.id=F){
+  assert("dimension mismatch", by.id  | dim(ds)[1] == length(self$index))
+  use_part=self$partition
+  result=lapply(use_part,function(p){
+    if(by.id){
+      parted=merge(ds,data.table(id=self$id[p$x]),by='id',all=F)
+    }else{
+        parted= ds[p$x]
+      }
+    yparted=parted
+    if(y) 
+      if(by.id){
+        yparted=merge(parted,data.table(id=self$id[p$x],y=p$Class),by='id',all=F)
+      }else{
+        yparted=cbind(parted,data.table(y=p$Class))
+      }
+    yparted
   } )
   names(result)=paste("Resample",1:(self$k),sep=".")
   result
@@ -36,15 +47,44 @@ data_partition.regression = function(partition){
             legend.position = "none")
   })
 }
-
-
+data_partition.histogram = function(partition){
+  dt=rbindlist(lapply(names(partition),function(sname){
+    dt=partition[[sname]]
+    dt_plot=dt[,.(.N,part=sname),.(x=activ_year*100+floor(activ_month/4-0.25)*4/12*100,y)]
+    dt_plot
+  }))
+  dt=dt[,.(N=mean(N,na.rm=T),Nsd=sd(N)),.(x,y)]
+  dt[,.(x,y,N,Nmax=N+Nsd,Nmin=N-Nsd)]
+}
+data_partition.histogram_origin = function(partition){
+  dt=rbindlist(lapply(names(partition),function(sname){
+    dt=partition[[sname]]
+    dt_plot=dt[,.(.N,part=sname),.(x=activ_year*100+floor(activ_month/4-0.25)*4/12*100,y,
+                                   origin)]
+    dt_plot
+  }))
+  dt=dt[,.(N=mean(N,na.rm=T),Nsd=sd(N)),.(x,y,origin)]
+  dt[,.(x,y,N,Nmax=N+Nsd,Nmin=N-Nsd,origin)]
+}
+data_partition.histogram_origin_has_gas = function(partition){
+  dt=rbindlist(lapply(names(partition),function(sname){
+    dt=partition[[sname]]
+    dt_plot=dt[,.(.N,part=sname),.(x=activ_year*100+floor(activ_month/4-0.25)*4/12*100,y,
+                                   origin,has_gas)]
+    dt_plot
+  }))
+  dt=dt[,.(N=mean(N,na.rm=T),Nsd=sd(N)),.(x,y,origin,has_gas)]
+  dt[,.(x,y,N,Nmax=N+Nsd,Nmin=N-Nsd,origin,has_gas)]
+}
 data_partition=function(x,y,k=5){
   index=1:dim(x)[1]
+  id=x$id
   assert("dimension mismatch",length(index)==length(y))
   self=list()
   self$k=k
   self$index=index
   self$partition=data_partition.make(index,y,k)
+  self$id=id
   self$apply=data_partition.apply
   self$measure=data_partition.measure
   self

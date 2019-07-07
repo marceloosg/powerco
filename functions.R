@@ -46,7 +46,11 @@ transform_dates=function(cdates){
 }
 get_dates=function(frame,indexes){
   cdates=frame[,indexes$dates,with=F][,lapply(.SD,function(d) as.Date(d,format="%Y-%m-%d"))]
-  list("dates"=cdates, "transformed_dates"=transform_dates(cdates))
+  transformed=NA
+  if(length(indexes$dates) > 0){
+    transformed=transform_dates(cdates)
+  }
+  list("dates"=cdates, "transformed_dates"=transformed)
 }
 
 get_categorical=function(frame,indexes){
@@ -86,7 +90,17 @@ getdummy=function(df){
   rdf+0
 }
 predict_one_hot_model=function(one_hot_categorical_model,structure_data){
-  one_hot_categorical_data=data.table(predict(one_hot_categorical_model,structure_data$raw$categorical))
+  lvls=lapply(structure_data$raw$categorical,levels)
+  model_lvls=one_hot_categorical_model$lvls
+  category=structure_data$raw$categorical
+  for( var in names(lvls)){
+    l=lvls[[var]]
+    l2=model_lvls[[var]]
+    toremove=setdiff(l,l2)
+    levels(category[[var]])[which(levels(category[[var]]) %in% toremove)]=""
+  }
+  
+  one_hot_categorical_data=data.table(predict(one_hot_categorical_model,category))
   one_hot_categorical_data
 }
 
@@ -134,7 +148,7 @@ build_binaries=function(structure_data){
   structure_data
 }
 train_binary_pca=function(model,structured_data,remove_columns=c()){
-  dataset=structure_data$combined$binaries
+  dataset=structured_data$combined$binaries
   dataset=dataset[,setdiff(names(dataset),remove_columns),with=F]
   print("Training Binary PCA")
   model$pca$binary=prcomp(dataset,rank. = 15)
@@ -142,7 +156,7 @@ train_binary_pca=function(model,structured_data,remove_columns=c()){
   model
 }
 train_continuous_pca=function(model,structured_data,remove_columns=c()){
-  dataset=structure_data$output$imputed_values
+  dataset=structured_data$output$imputed_values
   dataset=dataset[,setdiff(names(dataset),remove_columns),with=F]
   print("Training Continuous PCA")
   model$pca$values=prcomp(dataset,rank. = 15)
@@ -183,11 +197,11 @@ pca_accuracy=function(model,binary=T){
     scale_fill_gradient2(low="red",high="blue",breaks=c(0,0.2,0.4,0.6,0.8,1),midpoint = 0.35)+ylim(0,1)+
     theme(axis.text.x = element_text(angle = 90, hjust = 1))
   if(binary){
-    model$fit$pca$bin_accuracy <<- acc
+    model$fit$pca$bin_accuracy <- acc
   }else{
-    model$fit$pca$val_accuracy <<- acc
+    model$fit$pca$val_accuracy <- acc
   }
-  plot_grid(histogram,bar)
+  list(model,histogram,bar)
 }
 plot_explain_variance=function(model){
   bin=fviz_screeplot(model$fit$pca$binary, addlabels = TRUE)
@@ -228,17 +242,25 @@ preprocess_predict_pipeline=function(model,data){
        "output"=output,
        "results"=results)
 }
-cbindlist=function(dlist,append=F){
+cbindlist=function(dlist,except=c(),append=F){
   
   aux=dlist[names(dlist)[1]][[1]]
-  for(a in names(dlist)[-1]){
-    ds=dlist[[a]]
-    if(append) colnames(ds)=paste(a,names(ds),sep=".")
-    aux=cbind(aux,ds)
-  }
+  for(a in setdiff(names(dlist)[-1],except)){
+    if( nchar(a) > 0){
+      ds=dlist[[a]]
+      if(append) colnames(ds)=paste(a,names(ds),sep=".")
+      aux=cbind(aux,ds)
+      
+    }
+    }
   aux
 }
-
+transform_gas=function(gas){
+  sapply(gas,function(s){
+    ifelse(s < 0, log(-1/s),
+           ifelse(s == 0, 0, log(s)))
+  })
+}
 assert=function(text,bool){
   try(if(!bool) stop(text))
 }

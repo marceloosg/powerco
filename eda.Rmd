@@ -9,6 +9,8 @@ library(data.table)
 library(RANN)
 library(e1071)
 source("functions.R")
+library(doMC) 
+registerDoMC(cores = 5) 
 ```
 
 
@@ -36,6 +38,7 @@ set.seed(814)
 full_train_index=createDataPartition(output$churn,p=0.7,list = F)
 full_train_data=data[full_train_index]
 test_data=data[-full_train_index]
+dim(full_train_data)
 ```
 # Basic Cleaning
 Let's us build a basic clean dataset before undersampling it.
@@ -67,7 +70,8 @@ We chose to undersample before making any descriptive analysis to prevent long t
 Let's see which are the top 10 binary values with great jaccard similarity with our target variable:
 # Similarities
 ```{r}
-part$measure(sampled_binary,jaccard)
+bin=part$measure(sampled_binary,jaccard)
+bin
 ```
 These results were averaged out of 11 resamplings.
 
@@ -84,6 +88,42 @@ plot_grid(plotlist=plots)
 ```
 From the last couple of years we can see a linear increase in the probability of churn with time. The means that recent activation users are more likely to churn.
 
+```{r}
+hist.sampled=data_partition.histogram(sampled_values)
+ggplot(hist.sampled,aes(x=x,y=N,fill=y,ymax=Nmax,ymin=Nmin))+
+  geom_histogram(stat='identity',position='identity',alpha=0.5)+
+  geom_errorbar()+geom_vline(xintercept=200900)+geom_vline(xintercept=201133)
+```
+```{r}
+hist_sample=part$apply(part,cbind(clean_data$data$raw$values,
+                     clean_data$data$combined$binaries[,.(origin=origin_up.lxidpiddsbxsbosboudacockeimpuepw)]),y=T)
+hist.sampled_origin=data_partition.histogram_origin(hist_sample)
+ggplot(hist.sampled_origin,aes(x=x,y=N,fill=y,ymax=Nmax,ymin=Nmin))+
+  geom_histogram(stat='identity',position='identity',alpha=0.5)+
+  geom_errorbar()+geom_vline(xintercept=200900)+geom_vline(xintercept=201133)+facet_wrap(~origin)
+```
+```{r}
+hist_sample=part$apply(part,cbind(clean_data$data$raw$values,
+                     clean_data$data$combined$binaries[,.(has_gas,
+                                                          origin=origin_up.lxidpiddsbxsbosboudacockeimpuepw)]),y=T)
+hist.sampled_origin=data_partition.histogram_origin_has_gas(hist_sample)
+ggplot(hist.sampled_origin[has_gas==1],aes(x=x,y=N,fill=y,ymax=Nmax,ymin=Nmin))+
+  geom_histogram(stat='identity',position='identity',alpha=0.5)+
+  geom_errorbar()+geom_vline(xintercept=200900)+geom_vline(xintercept=201133)+facet_wrap(has_gas~origin)
+```
+```{r}
+set.seed(816)
+imput_data=preprocess_train_pipeline(full_train_data)
+idata=predict_preprocess_model(imput_data,full_train_data)
+
+hist_sample=part$apply(part,cbind(imput_data$data$output$imputed_values,
+                     clean_data$data$combined$binaries[,.(has_gas,
+                                                          origin=origin_up.lxidpiddsbxsbosboudacockeimpuepw)]),y=T)
+ggplot(hist_sample$Resample.1[,.N,.(y,cut(forecast_base_bill_year,30))][order(cut)],
+       aes(x=cut,y=N,fill=y))+geom_histogram(stat='identity',position="dodge")
+```
+
+
 Let's see if the energy price follows the same trend:
 
 ```{r}
@@ -93,21 +133,74 @@ clean_hist=hist
 clean_hist[,price_date:= as.Date(price_date,format="%Y-%m-%d")]
 clean_hist=melt(clean_hist,id.vars=c('id','price_date'))
 clean_hist[,sd:=sd(value),.(variable,id)]
+
 forecast=clean_hist[sd > 0][,.(price_2017=predict(lm(value ~ price_date),newdata = data.table(price_date=as.Date("2017-01-01")))),.(id,variable)]
 still_price_forecast=clean_hist[sd == 0][, .(price_2017=mean(value,na.rm=T)),.(id,variable)]
 full_forecast=rbind(forecast,still_price_forecast)
 avg_price_forecast=clean_hist[, .(avg_price_2015=mean(value,na.rm=T)),.(id,variable)]
 full_forecast=merge(full_forecast,avg_price_forecast,by=c('id','variable'))
 forecast_values=merge(full_forecast,dt,by='id',all=F)
-dt_plot=forecast_values[,.(price_2017=mean(price_2017),sd=sd(price_2017)) ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable)]
-ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd,color=variable))+geom_point()+geom_errorbar()
+
+origin=cbind(clean_data$data$output$id,clean_data$data$combined$binaries[,.(origin=origin_up.lxidpiddsbxsbosboudacockeimpuepw)])
+forecast_values=merge(forecast_values,origin,by='id',all=F)
+
+dt_plot=forecast_values[,.(.N,price_2017=mean(price_2017),sd=sd(price_2017)) ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable,churn)]
+ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd,color=variable,weight=N))+geom_point()+geom_errorbar()+geom_smooth()+facet_grid(~churn)+ylim(0,60)
 ```
 ```{r}
-dt_plot=forecast_values[,.(avg_price_2015=mean(avg_price_2015),sd=sd(avg_price_2015))
-                        ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable)]
-
-ggplot(dt_plot,aes(x=x,y=avg_price_2015,ymin=avg_price_2015-sd,ymax=avg_price_2015+sd))+geom_point()+geom_errorbar()
+dt_plot=forecast_values[,.(.N,price_2017=mean(price_2017),sd=sd(price_2017)) ,.(x=activ_year*100+(activ_month/12-0.5/12)*100,variable,churn,origin)]
+ggplot(dt_plot,aes(x=x,y=price_2017,ymin=price_2017-sd,ymax=price_2017+sd,color=variable,weight=N))+geom_point()+geom_errorbar()+geom_smooth()+facet_grid(origin~churn)+ylim(0,60)
 ```
+
+
+```{r}
+forepart=part$apply(part,forecast_values,y=T,by.id=T)
+forefunc=function(foreplot,name){
+foreplot=foreplot[activ_year > 2008,.(N=length(unique(id))),.(x=activ_year*100+floor(activ_month/4-0.25)*4/12*100,
+variable,                                                        price_2017=cut(price_2017,c(-46,14,28,42,112)),churn=as.factor(churn))]
+foreplot$name=name
+foreplot
+}
+foremerge=rbindlist(lapply(names(forepart),function(name) forefunc(forepart[[name]],name)))
+foremerge=foremerge[,.(Nsd=sd(N),N=mean(N)),.(x,variable,price_2017,churn)]
+ggplot(foremerge,aes(x=x,y=N,fill=churn,ymin=N-Nsd,ymax=N+Nsd))+
+  geom_histogram(stat='identity',position='identity',alpha=0.5)+geom_errorbar()+
+  facet_grid(variable ~price_2017)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+```{r}
+forepart=part$apply(part,forecast_values,y=T,by.id=T)
+forefunc=function(foreplot,name){
+foreplot=foreplot[activ_year > 2008,.(N=length(unique(id))),.(x=activ_year > 2011 | activ_year == 2011 & activ_month > 3,
+price_2017=cut(price_2017,c(-46,-0.1,-0.05,0.05,0.1,16:17,24,35,40:45,112)),churn=as.factor(churn),origin)]
+foreplot$name=name
+foreplot
+}
+foremerge=rbindlist(lapply(names(forepart),function(name) forefunc(forepart[[name]],name)))
+foremerge=foremerge[,.(Nsd=sd(N),N=mean(N)),.(x,price_2017,churn,origin)]
+ggplot(foremerge,aes(x=price_2017,y=N,fill=churn,ymin=N-Nsd,ymax=N+Nsd))+
+  geom_histogram(stat='identity',position='identity',alpha=0.5)+geom_errorbar()+
+  facet_grid(origin~x )+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r}
+forepart=part$apply(part,forecast_values,y=T,by.id=T)
+forefunc=function(foreplot,name){
+foreplot=foreplot[activ_year > 2008,
+                  .(N=length(unique(id))),
+                  .(x=activ_year > 2011 | activ_year == 2011 & activ_month > 3,
+                    imp_cost=cut(log(imp_cons-min(imp_cons)+1),30),
+                    churn=as.factor(churn),
+                    origin)]
+foreplot$name=name
+foreplot
+}
+foremerge=rbindlist(lapply(names(forepart),function(name) forefunc(forepart[[name]],name)))
+foremerge=foremerge[,.(Nsd=sd(N),N=mean(N)),.(x,origin,imp_cost,churn)]
+ggplot(foremerge,aes(x=imp_cost,y=N,fill=churn,ymin=N-Nsd,ymax=N+Nsd))+
+  geom_histogram(stat='identity',position='identity',alpha=0.5)+geom_errorbar()+
+  facet_grid(origin~x )+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
 
 
 
@@ -171,6 +264,7 @@ dt_plot[,sum((price_2017 > 0 )*N.x,na.rm=T)/sum(N.x,na.rm=T)]
 ```
 80% of churns have average price above the normal average.
 
+TODO : calculate price increase
 ```{r}
 gas_values=merge(forecast_values,data[,.(id,has_gas)],by='id')
 dt_plot=gas_values[activ_year >= 2009,.(.N,avg_churn=mean(churn)),.(x=activ_year,price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(transform_gas(cons_gas_12m),c(-8,-4,-2,0,1,2,15)),has_gas)]
@@ -192,12 +286,7 @@ ggplot(gas_values[,.(.N,avg_churn=mean(churn)),.(x=activ_year,price_cat=cut(pric
 ```
 
 ```{r}
-transform_gas=function(gas){
-  sapply(gas,function(s){
-    ifelse(s < 0, log(-1/s),
-           ifelse(s == 0, 0, log(s)))
-  })
-}
+
 gas_values[,summary(transform_gas(cons_gas_12m))]
 dt_plot=gas_values[activ_year >= 2009,.N,.(x=activ_year,price_cat=cut(price_2017,breaks = c(-46,0,4,8,12,24,48,105)),gas_cat=cut(transform_gas(cons_gas_12m),c(-8,-4,-2,0,1,2,15)),has_gas,churn)]
 dt_plot=dt_plot[,.(N,p=N/sum(N),price_cat,gas_cat),.(x,has_gas,churn)]
@@ -230,7 +319,9 @@ plot_cum_explain_variance(preprocess_model)
 
 # Let's see how accurate pca can reconstruct the binary matrix with just 15 dimensions
 ```{r}
-pca_accuracy(preprocess_model)
+ret=pca_accuracy(preprocess_model)
+preprocess_model=ret[[1]]
+plot_grid(plotlist=list(ret[[2]],ret[[3]]))
 ```
 
 # Are the low accuracy columns those correlated?
@@ -239,113 +330,12 @@ corrplot::corrplot(cor(preprocess_model$data$combined$binaries[,preprocess_model
 ```
 
 ```{r}
-pca_accuracy(preprocess_model,F)
+ret=pca_accuracy(preprocess_model,F)
+preprocess_model=ret[[1]]
+plot_grid(plotlist=list(ret[[2]],ret[[3]]))
 ```
 
 # Are the low accuracy columns those correlated?
 ```{r}
 corrplot::corrplot(cor(preprocess_model$data$output$imputed_values[,preprocess_model$fit$pca$val_accuracy[accurate==F]$names,with=F]))
 ```
-
-```{r}
-
-preprocessed_training_data=preprocess_predict_pipeline(preprocess_model,data)
-dim(preprocessed_training_data$results)
-```
-
-#Exploration:
-```{r}
-data.table(t(preprocessed_training_data$data$raw$values[,lapply(.SD,function(s) cor(s[!is.na(s)],output[!is.na(s)]$churn))]),keep.rownames = T)[order(-abs(V1))]
-```
-```{r}
-values=(data.table(t(preprocessed_training_data$data$raw$values[,lapply(.SD,function(s) 
-  c("m"=mean(s,na.rm=T),"s"=sd(s,na.rm=T))
-  ), output$churn]),keep.rownames = T))
-v=values[rn!="output",.(rn,r=V3/V4-V1/V2)][order(-abs(r))]
-v
-```
-```{r}
-library(MASS)
-dd=cbind(preprocessed_training_data$data$raw$values[,v[1:3]$rn,with=F],output[,churn])
-dd=dd[complete.cases(dd)]
-ds=rbind(dd[V2==1],dd[V2==0][sample(1:dim(dd[V2==0])[1],size=dim(dd[V2==1])[1])])
-lmod=randomForest::randomForest(factor(V2) ~ .,data=ds)
-
-
-
-
-```
-
-
-```{r}
-date_churn=cbind(preprocess_model$data$output$id,get_dates(data,preprocess_model$fit$structure_model$indexes,F))
-date_churn=merge(date_churn,output,by="id")
-date_churn[,mean(churn),month(date_end)][order(-V1)]
-```
-```{r}
-
-```
-
-
-# Training
-## split
-```{r}
-result=merge(preprocessed_training_data$results,output,by="id")
-set.seed(814)
-index = createDataPartition(y=output$churn, p=0.7, list=FALSE )
-
-train = result[index,-c("id")]
-test = result[-index,-c("id")]
-```
-
-#Baysian
-```{r}
-set.seed(814)
-nb.fit = train(as.factor(churn) ~ ., data=train, method="nb",
-                trControl = trainControl(method = "cv"))
-z=predict(nb.fit)
-confusionMatrix(z,as.factor(train$churn))
-```
-
-#LDA
-```{r}
-set.seed(814)
-lda.fit = train(as.factor(churn) ~ ., data=train, method="lda",
-                trControl = trainControl(method = "cv"))
-z=predict(lda.fit)
-confusionMatrix(z,factor(train$churn))
-```
-
-```{r}
-set.seed(814)
-ctrl <- trainControl(method = "cv", 
-                     number = 7, 
-                     verboseIter = FALSE,
-                     sampling = "down")
-down.lda.fit = train(as.factor(churn) ~ ., data=train, method="lda",
-                trControl = ctrl)
-z=predict(down.lda.fit)
-confusionMatrix(z,factor(train$churn))
-```
-```{r}
-set.seed(814)
-ctrl <- trainControl(method = "cv", 
-                     number = 7, 
-                     verboseIter = FALSE,
-                     sampling = "up")
-lda.fit = train(as.factor(churn) ~ ., data=train, method="lda",
-                trControl = ctrl)
-table(predict(lda.fit),train$churn)
-```
-
-#RF
-```{r}
-rf.fit = train(as.factor(churn) ~ ., data=train, method="rf",
-                trControl = trainControl(method = "cv"))
-table(predict(rf.fit),train$churn)
-```
-```{r}
-confusionMatrix(predict(rf.fit,test),factor(test$churn),positive = "1")
-
-```
-
